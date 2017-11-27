@@ -9,10 +9,11 @@ GRAD_CLIP = 5.
 NUM_EPOCHS = 50
 LEARNING_RATE = 0.002
 DECAY_RATE = 0.97
+LOG_DIR = "logs"
 
 
 def train(batch_size, seq_length, vocab_size, x_data, y_data):
-    cell_fn = rnn.BasicRNNCell
+    cell_fn = rnn.BasicLSTMCell
     cells = []
     for _ in range(NUM_LAYERS):
         layer_cell = cell_fn(RNN_SIZE)
@@ -27,9 +28,18 @@ def train(batch_size, seq_length, vocab_size, x_data, y_data):
     batch_time = tf.Variable(0.0, name="batch_time", trainable=False)
     tf.summary.scalar("time_batch", batch_time)
 
+    def variable_summaries(var):
+        with tf.name_scope('summaries'):
+            mean = tf.reduce_mean(var)
+            tf.summary.scalar('mean', mean)
+            tf.summary.scalar('max', tf.reduce_max(var))
+            tf.summary.scalar('min', tf.reduce_min(var))
+
     with tf.variable_scope('rnnlm'):
         softmax_w = tf.get_variable("softmax_w", [RNN_SIZE, vocab_size])
+        variable_summaries(softmax_w)
         softmax_b = tf.get_variable("softmax_b", [vocab_size])
+        variable_summaries(softmax_b)
         with tf.device("/cpu:0"):
             embedding = tf.get_variable("embedding", [vocab_size, RNN_SIZE])
             inputs = tf.split(tf.nn.embedding_lookup(embedding, input_data), seq_length, 1)
@@ -52,9 +62,11 @@ def train(batch_size, seq_length, vocab_size, x_data, y_data):
     train_op = optimizer.apply_gradients(zip(grads, tvars))
 
     merged = tf.summary.merge_all()
+    train_writer = tf.summary.FileWriter(LOG_DIR)
     num_batches = len(x_data)
 
     with tf.Session() as sess:
+        train_writer.add_graph(sess.graph)
         tf.global_variables_initializer().run()
         for e in range(epoch_pointer.eval(), NUM_EPOCHS):
             sess.run(tf.assign(lr, LEARNING_RATE * (DECAY_RATE ** e)))
@@ -68,9 +80,11 @@ def train(batch_size, seq_length, vocab_size, x_data, y_data):
                 feed = {input_data: x, targets: y, initial_state: state, batch_time: speed}
                 summary, train_loss, state, _, _ = sess.run([merged, cost, final_state, train_op, inc_batch_pointer_op],
                                                             feed)
+                train_writer.add_summary(summary, e * num_batches + b)
                 speed = time.time() - start
                 if (e * num_batches + b) % batch_size == 0:
                     print("{}/{} (epoch {}), train_loss = {:.3f}, time/batch = {:.3f}"
                           .format(e * num_batches + b, NUM_EPOCHS * num_batches, e, train_loss, speed))
+    train_writer.close()
 
     print('training is finished')
