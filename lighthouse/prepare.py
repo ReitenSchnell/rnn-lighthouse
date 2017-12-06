@@ -20,7 +20,7 @@ def build_vocabulary(words):
     vocabulary_inv = [x[0] for x in word_counts.most_common()]
     vocabulary_inv = list(sorted(vocabulary_inv))
     vocabulary = {x: i for i, x in enumerate(vocabulary_inv)}
-    return vocabulary
+    return [vocabulary, vocabulary_inv]
 
 
 def create_batches(vocabulary, text, batch_size, seq_length):

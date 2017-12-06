@@ -2,6 +2,9 @@ import tensorflow as tf
 from tensorflow.contrib import rnn
 from tensorflow.contrib import legacy_seq2seq
 import time
+import random
+import numpy as np
+import os
 
 RNN_SIZE = 256
 NUM_LAYERS = 2
@@ -10,15 +13,12 @@ NUM_EPOCHS = 50
 LEARNING_RATE = 0.002
 DECAY_RATE = 0.97
 LOG_DIR = "logs"
+SAVE_DIR = "save"
+SAVE_EVERY = 50
 
 
 def train(batch_size, seq_length, vocab_size, x_data, y_data):
-    cell_fn = rnn.BasicLSTMCell
-    cells = []
-    for _ in range(NUM_LAYERS):
-        layer_cell = cell_fn(RNN_SIZE)
-        cells.append(layer_cell)
-    cell = rnn.MultiRNNCell(cells)
+    cell = setup_cell()
     input_data = tf.placeholder(tf.int32, [batch_size, seq_length])
     targets = tf.placeholder(tf.int32, [batch_size, seq_length])
     initial_state = cell.zero_state(batch_size, tf.float32)
@@ -35,7 +35,8 @@ def train(batch_size, seq_length, vocab_size, x_data, y_data):
             tf.summary.scalar('max', tf.reduce_max(var))
             tf.summary.scalar('min', tf.reduce_min(var))
 
-    with tf.variable_scope('rnnlm'):
+    main_scope = 'light'
+    with tf.variable_scope(main_scope):
         softmax_w = tf.get_variable("softmax_w", [RNN_SIZE, vocab_size])
         variable_summaries(softmax_w)
         softmax_b = tf.get_variable("softmax_b", [vocab_size])
@@ -45,7 +46,7 @@ def train(batch_size, seq_length, vocab_size, x_data, y_data):
             inputs = tf.split(tf.nn.embedding_lookup(embedding, input_data), seq_length, 1)
             inputs = [tf.squeeze(input_, [1]) for input_ in inputs]
 
-    outputs, last_state = legacy_seq2seq.rnn_decoder(inputs, initial_state, cell, scope='rnnlm')
+    outputs, last_state = legacy_seq2seq.rnn_decoder(inputs, initial_state, cell, scope=main_scope)
     output = tf.reshape(tf.concat(outputs, 1), [-1, RNN_SIZE])
     logits = tf.matmul(output, softmax_w) + softmax_b
     loss = legacy_seq2seq.sequence_loss_by_example([logits],
@@ -68,23 +69,94 @@ def train(batch_size, seq_length, vocab_size, x_data, y_data):
     with tf.Session() as sess:
         train_writer.add_graph(sess.graph)
         tf.global_variables_initializer().run()
-        for e in range(epoch_pointer.eval(), NUM_EPOCHS):
-            sess.run(tf.assign(lr, LEARNING_RATE * (DECAY_RATE ** e)))
+        saver = tf.train.Saver(tf.global_variables())
+        for epoch_number in range(epoch_pointer.eval(), NUM_EPOCHS):
+            sess.run(tf.assign(lr, LEARNING_RATE * (DECAY_RATE ** epoch_number)))
             state = sess.run(initial_state)
             speed = 0
-            assign_op = epoch_pointer.assign(e)
+            assign_op = epoch_pointer.assign(epoch_number)
             sess.run(assign_op)
-            for b in range(0, num_batches):
+            for batch_number in range(0, num_batches):
                 start = time.time()
-                x, y = x_data[b], y_data[b]
+                x, y = x_data[batch_number], y_data[batch_number]
                 feed = {input_data: x, targets: y, initial_state: state, batch_time: speed}
                 summary, train_loss, state, _, _ = sess.run([merged, cost, final_state, train_op, inc_batch_pointer_op],
                                                             feed)
-                train_writer.add_summary(summary, e * num_batches + b)
+                total_batches = epoch_number * num_batches + batch_number
+                train_writer.add_summary(summary, total_batches)
                 speed = time.time() - start
-                if (e * num_batches + b) % batch_size == 0:
+                if total_batches % batch_size == 0:
                     print("{}/{} (epoch {}), train_loss = {:.3f}, time/batch = {:.3f}"
-                          .format(e * num_batches + b, NUM_EPOCHS * num_batches, e, train_loss, speed))
-    train_writer.close()
+                          .format(total_batches, NUM_EPOCHS * num_batches, epoch_number, train_loss, speed))
 
-    print('training is finished')
+                last_batch = epoch_number == NUM_EPOCHS - 1 and batch_number == num_batches - 1
+                if total_batches % SAVE_EVERY == 0 or last_batch:
+                    checkpoint_path = os.path.join(SAVE_DIR, 'model.ckpt')
+                    saver.save(sess, checkpoint_path, global_step=total_batches)
+                    print("model saved to {}".format(checkpoint_path))
+        train_writer.close()
+        print('training is finished')
+
+
+def setup_cell():
+    cell_fn = rnn.BasicLSTMCell
+    cells = []
+    for _ in range(NUM_LAYERS):
+        layer_cell = cell_fn(RNN_SIZE)
+        cells.append(layer_cell)
+    cell = rnn.MultiRNNCell(cells)
+    return cell
+
+
+def sample(vocab_inv, vocab, sample_length=30):
+    with tf.Session() as sess:
+        cell = setup_cell()
+        input_data = tf.placeholder(tf.int32, [1, 1])
+        initial_state = cell.zero_state(1, tf.float32)
+
+        main_scope = 'light'
+        vocab_size = len(vocab)
+        with tf.variable_scope(main_scope, reuse=tf.AUTO_REUSE):
+            softmax_w = tf.get_variable("softmax_w", [RNN_SIZE, vocab_size])
+            softmax_b = tf.get_variable("softmax_b", [vocab_size])
+            with tf.device("/cpu:0"):
+                embedding = tf.get_variable("embedding", [vocab_size, RNN_SIZE])
+                inputs = tf.split(tf.nn.embedding_lookup(embedding, input_data), 1, 1)
+                inputs = [tf.squeeze(input_, [1]) for input_ in inputs]
+
+        outputs, last_state = legacy_seq2seq.rnn_decoder(inputs, initial_state, cell, scope=main_scope)
+        output = tf.reshape(tf.concat(outputs, 1), [-1, RNN_SIZE])
+        logits = tf.matmul(output, softmax_w) + softmax_b
+        probs = tf.nn.softmax(logits)
+        final_state = last_state
+
+        tf.global_variables_initializer().run()
+        saver = tf.train.Saver(tf.global_variables())
+        ckpt = tf.train.get_checkpoint_state(SAVE_DIR)
+        if ckpt and ckpt.model_checkpoint_path:
+            saver.restore(sess, ckpt.model_checkpoint_path)
+            print('starting sampling')
+            state = sess.run(initial_state)
+            prime = random.choice(list(vocab.keys()))
+            for word in prime.split()[:-1]:
+                print('prime is:' + word)
+                x = np.zeros((1, 1))
+                x[0, 0] = vocab.get(word, 0)
+                feed = {input_data: x, initial_state: state}
+                [state] = sess.run([final_state], feed)
+            ret = prime
+            word = prime.split()[-1]
+            for n in range(sample_length):
+                x = np.zeros((1, 1))
+                x[0, 0] = vocab.get(word, 0)
+                feed = {input_data: x, initial_state: state}
+                [state_probs, state] = sess.run([probs, final_state], feed)
+                p = state_probs[0]
+                t = np.cumsum(p)
+                s = np.sum(p)
+                sample = int(np.searchsorted(t, np.random.rand(1)*s))
+                pred = vocab_inv[sample]
+                ret += ' ' + pred
+                word = pred
+            print('sampling finished')
+            print('sampling result: ' + ret)
