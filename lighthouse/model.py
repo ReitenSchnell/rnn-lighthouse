@@ -9,7 +9,7 @@ import os
 RNN_SIZE = 256
 NUM_LAYERS = 2
 GRAD_CLIP = 5.
-NUM_EPOCHS = 50
+NUM_EPOCHS = 200
 LEARNING_RATE = 0.002
 DECAY_RATE = 0.97
 LOG_DIR = "logs"
@@ -17,7 +17,7 @@ SAVE_DIR = "save"
 SAVE_EVERY = 50
 
 
-def train(batch_size, seq_length, vocab_size, x_data, y_data):
+def train(batch_size, seq_length, vocab_size, x_data, y_data, model_dir):
     cell = setup_cell()
     input_data = tf.placeholder(tf.int32, [batch_size, seq_length])
     targets = tf.placeholder(tf.int32, [batch_size, seq_length])
@@ -91,7 +91,7 @@ def train(batch_size, seq_length, vocab_size, x_data, y_data):
 
                 last_batch = epoch_number == NUM_EPOCHS - 1 and batch_number == num_batches - 1
                 if total_batches % SAVE_EVERY == 0 or last_batch:
-                    checkpoint_path = os.path.join(SAVE_DIR, 'model.ckpt')
+                    checkpoint_path = os.path.join(model_dir, 'model.ckpt')
                     saver.save(sess, checkpoint_path, global_step=total_batches)
                     print("model saved to {}".format(checkpoint_path))
         train_writer.close()
@@ -108,7 +108,7 @@ def setup_cell():
     return cell
 
 
-def sample(vocab_inv, vocab, sample_length=30):
+def sample(vocab_inv, vocab, model_dir, sample_length=30, prime=None):
     with tf.Session() as sess:
         cell = setup_cell()
         input_data = tf.placeholder(tf.int32, [1, 1])
@@ -132,19 +132,21 @@ def sample(vocab_inv, vocab, sample_length=30):
 
         tf.global_variables_initializer().run()
         saver = tf.train.Saver(tf.global_variables())
-        ckpt = tf.train.get_checkpoint_state(SAVE_DIR)
+        ckpt = tf.train.get_checkpoint_state(model_dir)
         if ckpt and ckpt.model_checkpoint_path:
             saver.restore(sess, ckpt.model_checkpoint_path)
             print('starting sampling')
             state = sess.run(initial_state)
-            prime = random.choice(list(vocab.keys()))
-            for word in prime.split()[:-1]:
-                print('prime is:' + word)
-                x = np.zeros((1, 1))
-                x[0, 0] = vocab.get(word, 0)
-                feed = {input_data: x, initial_state: state}
-                [state] = sess.run([final_state], feed)
+
+            if not prime:
+                prime = random.choice(list(vocab.keys()))
+            print('prime is:' + prime)
+            x = np.zeros((1, 1))
+            x[0, 0] = vocab.get(prime, 0)
+            feed = {input_data: x, initial_state: state}
+            [state] = sess.run([final_state], feed)
             ret = prime
+
             word = prime.split()[-1]
             for n in range(sample_length):
                 x = np.zeros((1, 1))

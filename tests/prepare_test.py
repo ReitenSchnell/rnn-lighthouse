@@ -8,7 +8,8 @@ def test_data_preparation():
 
 def test_vocabulary_builder():
     result = build_vocabulary(['foo', 'boo', 'moo', 'foo', '2222', '1111', 'boo', '2222', 'foo', '3333'])
-    assert result == {'1111': 0, '2222': 1, '3333': 2, 'boo': 3, 'foo': 4, 'moo': 5}
+    assert result[0] == {'1111': 0, '2222': 1, '3333': 2, 'boo': 3, 'foo': 4, 'moo': 5}
+    assert result[1] == ['1111', '2222', '3333', 'boo', 'foo', 'moo']
 
 
 def test_batches():

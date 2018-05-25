@@ -11,7 +11,7 @@ def prepare_data(data_dir):
     sentences = []
     for file in files:
         with open(join(absolute_dir, file)) as f:
-            sentences.extend(f.read().split())
+            sentences.extend(map(lambda x: x.lower(), f.read().split()))
     return sentences
 
 
